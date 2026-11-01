@@ -1,0 +1,22 @@
+# Runs the bundled example plan against the bundled fixture shop, no network or API key needed.
+#   docker compose up --build --abort-on-container-exit --exit-code-from probe
+# Reports land in ./jp-report (make sure it is writable by uid 1000: mkdir -p jp-report && chmod 777 jp-report).
+services:
+  shop:
+    build: .
+    command: ["demo-shop", "--host", "0.0.0.0", "--port", "8431"]
+  probe:
+    build: .
+    depends_on: [shop]
+    ipc: host # recommended by Playwright for Chromium in containers
+    command:
+      - run
+      - /app/examples/plans/maya-fixture-shop.plan.yaml
+      - --site
+      - /app/examples/sites/fixture-shop.yaml
+      - --base-url
+      - http://shop:8431
+      - --out-dir
+      - /work/jp-report
+    volumes:
+      - ./jp-report:/work/jp-report

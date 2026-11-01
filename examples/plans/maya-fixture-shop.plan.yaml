@@ -1,0 +1,60 @@
+version: 1
+persona: maya
+site: fixture-shop
+generated_by:
+  provider: mock
+  model: mock-1
+  mock: true
+journeys:
+- name: 'maya: Buy a ceramic mug'
+  goal: Buy a ceramic mug
+  steps:
+  - note: start on the home page
+    action: goto
+    path: /
+  - action: search
+    query: Mug
+  - action: click
+    target:
+      role: link
+      name: Ceramic Mug
+  - action: assert_text
+    text: Ceramic Mug
+  - action: add_to_cart
+  - action: assert_text
+    text: Added to cart
+  - action: click
+    target:
+      testid: cart-link
+  - action: assert_url
+    contains: cart
+  - action: assert_text
+    text: Ceramic Mug
+    target:
+      testid: cart-items
+- name: 'maya: Buy a notebook for lectures'
+  goal: Buy a notebook for lectures
+  steps:
+  - note: start on the home page
+    action: goto
+    path: /
+  - action: search
+    query: Notebook
+  - action: click
+    target:
+      role: link
+      name: Notebook
+  - action: assert_text
+    text: Notebook
+  - action: add_to_cart
+  - action: assert_text
+    text: Added to cart
+  - action: click
+    target:
+      testid: cart-link
+  - action: assert_url
+    contains: cart
+  - action: assert_text
+    text: Notebook
+    target:
+      testid: cart-items

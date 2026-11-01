@@ -1,0 +1,15 @@
+{
+  "journeys": [
+    {
+      "name": "maya: Buy a notebook",
+      "goal": "Buy a notebook",
+      "steps": [
+        {"action": "goto", "path": "/"},
+        {"action": "search", "query": "Notebook"},
+        {"action": "click", "target": {"role": "link", "name": "Notebook"}},
+        {"action": "add_to_cart"},
+        {"action": "assert_text", "text": "Added to cart"}
+      ]
+    }
+  ]
+}
