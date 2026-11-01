@@ -6,12 +6,13 @@ import re
 import time
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urljoin
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import BrowserContext, Route, sync_playwright
 from pydantic import BaseModel
 
 from .actions import REGISTRY, Ctx
-from .models import Plan, SiteProfile, Target
+from .models import Plan, SiteProfile, Target, same_origin
 
 DOM_LIMIT = 30_000
 
@@ -59,6 +60,36 @@ def _trim_dom(html: str) -> str:
     return re.sub(r"\s+", " ", html)[:DOM_LIMIT]
 
 
+def _confine_navigation(context: BrowserContext, base_url: str) -> None:
+    """Abort every off-origin page navigation: direct ones, link clicks and every redirect hop.
+
+    The browser follows redirects inside its network stack, so the route handler fetches each navigation
+    itself with redirects off, checks the Location header, and only then hands the response back. A redirect
+    to another origin is therefore never requested. Sub-resources (images, scripts, fonts) are left alone:
+    the point is that a plan can never end up driving a different site, not that a page may not load a CDN asset.
+    """
+    def guard(route: Route) -> None:
+        req = route.request
+        if not req.is_navigation_request():
+            route.continue_()
+            return
+        if not same_origin(req.url, base_url):
+            route.abort("blockedbyclient")
+            return
+        try:
+            resp = route.fetch(max_redirects=0)
+            if 300 <= resp.status < 400:
+                loc = resp.headers.get("location")
+                if not loc or not same_origin(urljoin(req.url, loc), base_url):
+                    route.abort("blockedbyclient")
+                    return
+            route.fulfill(response=resp)
+        except Exception:  # noqa: BLE001 - fail closed: a navigation we could not vet does not happen
+            route.abort("failed")
+
+    context.route("**/*", guard)
+
+
 def run_plan(
     plan: Plan,
     site: SiteProfile,
@@ -78,6 +109,7 @@ def run_plan(
         for ji, journey in enumerate(plan.journeys):
             jslug = f"{ji}-{_slug(journey.name)}"
             context = browser.new_context(viewport={"width": 1280, "height": 800})
+            _confine_navigation(context, base)
             context.tracing.start(screenshots=True, snapshots=True)
             page = context.new_page()
             ctx = Ctx(page=page, site=site, base_url=base, timeout_ms=timeout_ms)

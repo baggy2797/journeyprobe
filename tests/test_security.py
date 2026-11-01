@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 
 from journeyprobe.healer import _LOCATOR_PATH, _safe_dom_path, _verify_unique
 from journeyprobe.llm import LLMError
-from journeyprobe.models import Target, same_origin
+from journeyprobe.models import Plan, SiteProfile, Target, same_origin
+from journeyprobe.runner import run_plan
 
 
 @pytest.mark.parametrize("url", [
@@ -29,6 +32,10 @@ def test_same_origin_accepts_same_scheme_host_port(url: str) -> None:
     "javascript:alert(1)",
     "file:///etc/passwd",
     "data:text/html,hi",
+    "http://127.0.0.1:8431\\@evil.example/",  # backslash: browsers treat it as a slash
+    "http://127.0.0.1:8431 @evil.example/",   # whitespace
+    "http://127.0.0.1:8431/\n@evil.example/",  # control character
+    "http://user:pw@127.0.0.1:8431/",         # embedded credentials
 ])
 def test_same_origin_rejects_everything_else(url: str) -> None:
     assert not same_origin(url, "http://127.0.0.1:8431/")
@@ -76,3 +83,60 @@ def test_heal_verifies_in_an_inert_page_without_running_scripts() -> None:
     # If the script ran, it would remove the only button and the count would be 0.
     dom = '<button id="a">Buy</button><script>document.getElementById("a").remove()</script>'
     assert _verify_unique(dom, Target(css="#a")) == 1
+
+
+def _server(handler_cls: type) -> tuple[HTTPServer, str]:
+    srv = HTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+@pytest.mark.integration
+def test_redirect_and_link_to_another_origin_are_blocked_at_the_network_layer(tmp_path: Path) -> None:
+    hits: list[str] = []
+
+    class Other(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"other")
+
+        def log_message(self, *a: object) -> None: ...
+
+    other, other_url = _server(Other)
+
+    class Shop(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", other_url + "/via-redirect")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(f'<a data-testid="out" href="{other_url}/via-link">out</a>'.encode())
+
+        def log_message(self, *a: object) -> None: ...
+
+    shop, shop_url = _server(Shop)
+    site = SiteProfile.model_validate({"name": "t", "base_url": shop_url, "selectors": {}})
+    try:
+        redirect = Plan.model_validate({
+            "persona": "p", "site": "t", "generated_by": {"provider": "t", "model": "t"},
+            "journeys": [{"name": "r", "goal": "g", "steps": [{"action": "goto", "path": "/redirect"}]}]})
+        res = run_plan(redirect, site, tmp_path / "a", timeout_ms=1500)
+        assert not res.passed
+        link = Plan.model_validate({
+            "persona": "p", "site": "t", "generated_by": {"provider": "t", "model": "t"},
+            "journeys": [{"name": "l", "goal": "g", "steps": [
+                {"action": "goto", "path": "/"},
+                {"action": "click", "target": {"testid": "out"}},
+                {"action": "assert_text", "text": "other"}]}]})
+        res = run_plan(link, site, tmp_path / "b", timeout_ms=1500)
+        assert not res.passed
+    finally:
+        shop.shutdown()
+        other.shutdown()
+    assert hits == [], "the other origin must never receive a request"

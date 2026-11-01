@@ -76,8 +76,13 @@ class SiteProfile(_Strict):
 
 def same_origin(url: str, base_url: str) -> bool:
     """True only for http(s) URLs with the same scheme, hostname and port as base_url."""
+    # Reject anything a browser might read differently from urllib: whitespace, control characters, backslashes.
+    if any(c.isspace() or ord(c) < 32 or c == "\\" for c in url):
+        return False
     try:
         u, b = urlparse(url), urlparse(base_url)
+        if u.username is not None or u.password is not None:
+            return False
         if u.scheme not in ("http", "https") or u.scheme != b.scheme:
             return False
         default = 443 if u.scheme == "https" else 80
