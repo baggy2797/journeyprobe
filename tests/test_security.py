@@ -192,3 +192,50 @@ def test_tricky_and_multi_hop_redirects_never_reach_another_origin(tmp_path: Pat
         other.shutdown()
     assert not res.passed
     assert hits == [], f"the other origin received {hits}"
+
+
+@pytest.mark.integration
+def test_run_fails_if_the_browser_ends_up_off_origin_even_when_a_server_changes_its_answer(tmp_path: Path) -> None:
+    """A same-origin server that answers the guard's check differently from the browser's own request.
+
+    The guard cannot stop the browser's second request (documented limitation), but the run must fail.
+    """
+    class Other(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a: object) -> None: ...
+
+    other, other_url = _server(Other)
+    landing = {"n": 0}
+
+    class Shop(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/flip":  # same-origin redirect: the guard follows it itself
+                self.send_response(302)
+                self.send_header("Location", "/landing")
+            elif self.path == "/landing":
+                landing["n"] += 1
+                if landing["n"] > 1:  # the guard's check saw 200; the browser's own request gets this
+                    self.send_response(302)
+                    self.send_header("Location", other_url + "/x")
+                else:
+                    self.send_response(200)
+            else:
+                self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a: object) -> None: ...
+
+    shop, shop_url = _server(Shop)
+    site = SiteProfile.model_validate({"name": "t", "base_url": shop_url, "selectors": {}})
+    plan = Plan.model_validate({
+        "persona": "p", "site": "t", "generated_by": {"provider": "t", "model": "t"},
+        "journeys": [{"name": "j", "goal": "g", "steps": [{"action": "goto", "path": "/flip"}]}]})
+    try:
+        res = run_plan(plan, site, tmp_path, timeout_ms=1500)
+    finally:
+        shop.shutdown()
+        other.shutdown()
+    assert not res.passed

@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 from playwright.sync_api import BrowserContext, Route, sync_playwright
 from pydantic import BaseModel
 
-from .actions import REGISTRY, Ctx
+from .actions import REGISTRY, Ctx, StepError
 from .models import Plan, SiteProfile, Target, same_origin
 
 DOM_LIMIT = 30_000
@@ -144,6 +144,9 @@ def run_plan(
                 t0 = time.perf_counter()
                 try:
                     REGISTRY[step.action].handler(step, ctx)
+                    # Defence in depth: whatever the step did (click, search, goto), we must still be on the site.
+                    if page.url != "about:blank" and not same_origin(page.url, base):
+                        raise StepError(f"the browser ended up outside the site origin: {page.url}")
                     results.append(StepResult(index=si, action=step.action, note=step.note,
                                               status="passed",
                                               duration_s=round(time.perf_counter() - t0, 3)))

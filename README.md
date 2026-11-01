@@ -137,6 +137,11 @@ broken-selector scenario, artifact checks, heal end-to-end and applying the gene
   add, check cart). The fixture shop is a toy; this has not been run on any real or third-party site.
 - **Chromium only**, desktop viewport, no auth/login flows, no secrets handling, no iframes/shadow-DOM-specific support
   beyond what Playwright's locators do by default.
+- **Site confinement is best effort, not a sandbox.** A network-layer guard aborts off-origin navigations and vets every
+  redirect hop, service workers are blocked, and every step is followed by an origin check. It assumes the site under test
+  is trusted. A same-origin server that answers a redirect differently the second time can still make the browser send one
+  request elsewhere (the run then fails, but the request was made). For hostile sites, run in a container with an egress
+  allow-list.
 - **Vocabulary is e-commerce flavoured** and deliberately small. Assertions are text/visibility/URL only.
 - **Heal handles locator failures only**; it does not fix wrong expectations, changed flows or timing issues, and it
   heals one failure per journey (steps after the first failure are skipped).
