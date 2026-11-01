@@ -1,5 +1,7 @@
 # journeyprobe
 
+[![CI](https://github.com/baggy2797/journeyprobe/actions/workflows/ci.yml/badge.svg)](https://github.com/baggy2797/journeyprobe/actions/workflows/ci.yml)
+
 An LLM **authors** persona-based user-journey tests as a reviewable YAML plan. Playwright **replays** that plan
 deterministically, with no LLM involved at run time. When a locator breaks, an optional `heal` command asks the LLM for a
 replacement based on a DOM snapshot and gives it to you as a **diff that is never applied automatically**.
