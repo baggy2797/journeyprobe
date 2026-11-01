@@ -74,6 +74,18 @@ class SiteProfile(_Strict):
         return urlparse(self.base_url).netloc
 
 
+def same_origin(url: str, base_url: str) -> bool:
+    """True only for http(s) URLs with the same scheme, hostname and port as base_url."""
+    try:
+        u, b = urlparse(url), urlparse(base_url)
+        if u.scheme not in ("http", "https") or u.scheme != b.scheme:
+            return False
+        default = 443 if u.scheme == "https" else 80
+        return u.hostname == b.hostname and (u.port or default) == (b.port or default)
+    except ValueError:
+        return False
+
+
 class _Step(_Strict):
     note: str | None = Field(default=None, description="Human-readable intent of this step.")
 
@@ -172,8 +184,8 @@ def check_plan_against_site(plan: Plan, site: SiteProfile) -> list[str]:
             where = f"journeys[{ji}].steps[{si}]"
             if isinstance(s, Goto):
                 u = urlparse(s.path)
-                if u.netloc and u.netloc != site.host:
-                    errs.append(f"{where}: goto leaves site host {site.host!r}: {s.path}")
+                if (u.scheme or u.netloc) and not same_origin(s.path, site.base_url):
+                    errs.append(f"{where}: goto leaves the site origin {site.base_url!r}: {s.path}")
             if isinstance(s, Search) and "search_input" not in site.selectors:
                 errs.append(f"{where}: 'search' needs selectors.search_input in the site profile")
             if isinstance(s, AddToCart) and s.target is None and "add_to_cart" not in site.selectors:

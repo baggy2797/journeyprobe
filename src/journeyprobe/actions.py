@@ -22,6 +22,7 @@ from .models import (
     Search,
     SiteProfile,
     Target,
+    same_origin,
 )
 
 
@@ -92,11 +93,16 @@ def _selector(ctx: Ctx, key: str) -> Target:
 
 @action(Goto, "goto(path): navigate to a path on the site")
 def _goto(s: Goto, ctx: Ctx) -> None:
-    url = urljoin(ctx.base_url.rstrip("/") + "/", s.path.lstrip("/")) if not urlparse(s.path).netloc \
-        else s.path
-    if urlparse(url).netloc != urlparse(ctx.base_url).netloc:
-        raise StepError(f"refusing to leave the site: {url}")
+    parsed = urlparse(s.path)
+    url = s.path if (parsed.scheme or parsed.netloc) \
+        else urljoin(ctx.base_url.rstrip("/") + "/", s.path.lstrip("/"))
+    if not same_origin(url, ctx.base_url):
+        raise StepError(f"refusing to leave the site origin: {url}")
     ctx.page.goto(url, timeout=ctx.timeout_ms)
+    # Redirects are followed by the browser, so check where we actually ended up.
+    if not same_origin(ctx.page.url, ctx.base_url):
+        ctx.page.goto("about:blank")
+        raise StepError("refusing to stay on a page outside the site origin (redirect)")
 
 
 @action(Search, "search(query): type into the site's search box and submit")

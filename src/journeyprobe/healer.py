@@ -46,14 +46,32 @@ def _set_path(data: Any, path: str, value: dict[str, Any]) -> None:
         cur[last] = value
 
 
+_LOCATOR_PATH = re.compile(r"^(selectors\.\w+|journeys\[\d+\]\.steps\[\d+\]\.target)$")
+
+
+def _safe_dom_path(results_dir: Path, name: str) -> Path:
+    """A DOM snapshot must be a bare *.dom.html file inside results_dir (results.json is data, not trusted)."""
+    if not name or Path(name).name != name or not name.endswith(".dom.html"):
+        raise LLMError(f"refusing unexpected DOM snapshot name: {name!r}")
+    root = results_dir.resolve()
+    path = (root / name).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise LLMError(f"DOM snapshot not found inside the results directory: {name!r}")
+    return path
+
+
 def _verify_unique(dom: str, target: Target) -> int:
+    """Count matches in an inert page: no JavaScript, no network, so a hostile snapshot cannot do anything."""
     with sync_playwright() as pw:
         b = pw.chromium.launch()
-        page = b.new_page()
-        page.set_content(dom)
-        n = locate(page, target).count()
-        b.close()
-    return n
+        try:
+            ctx = b.new_context(java_script_enabled=False, offline=True)
+            ctx.route("**/*", lambda route: route.abort())
+            page = ctx.new_page()
+            page.set_content(dom)
+            return locate(page, target).count()
+        finally:
+            b.close()
 
 
 def _diff(label: str, before: str, after: str) -> str:
@@ -74,7 +92,9 @@ def propose_heals(
         for s in j.steps:
             if s.status != "failed" or not s.locator_path or not s.locator or not s.dom:
                 continue
-            dom = (results_dir / s.dom).read_text(encoding="utf-8")
+            if not _LOCATOR_PATH.fullmatch(s.locator_path):
+                raise LLMError(f"refusing unexpected locator path: {s.locator_path!r}")
+            dom = _safe_dom_path(results_dir, s.dom).read_text(encoding="utf-8")
             user = json.dumps({
                 "step": {"action": s.action, "note": s.note, "error": s.error},
                 "failed_target": s.locator.model_dump(exclude_none=True),

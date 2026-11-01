@@ -77,7 +77,7 @@ def test_semantic_checks(site: SiteProfile) -> None:
     assert check_plan_against_site(ok, site) == []
     bad = _plan([{"action": "goto", "path": "https://evil.example/x"}], site="other")
     errs = check_plan_against_site(bad, site)
-    assert any("other" in e for e in errs) and any("leaves site host" in e for e in errs)
+    assert any("other" in e for e in errs) and any("leaves the site origin" in e for e in errs)
     bare = site.model_copy(update={"selectors": {}})
     errs = check_plan_against_site(_plan([{"action": "search", "query": "x"}, {"action": "add_to_cart"}]), bare)
     assert len(errs) == 2
