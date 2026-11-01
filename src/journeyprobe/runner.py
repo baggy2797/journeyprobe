@@ -60,13 +60,19 @@ def _trim_dom(html: str) -> str:
     return re.sub(r"\s+", " ", html)[:DOM_LIMIT]
 
 
+MAX_REDIRECTS = 10
+
+
 def _confine_navigation(context: BrowserContext, base_url: str) -> None:
     """Abort every off-origin page navigation: direct ones, link clicks and every redirect hop.
 
-    The browser follows redirects inside its network stack, so the route handler fetches each navigation
-    itself with redirects off, checks the Location header, and only then hands the response back. A redirect
-    to another origin is therefore never requested. Sub-resources (images, scripts, fonts) are left alone:
-    the point is that a plan can never end up driving a different site, not that a page may not load a CDN asset.
+    A redirect that the handler hands back to the browser is followed inside the browser's network stack
+    and is NOT routed again, so a chain such as /a -> /b -> other-origin would escape a first-hop-only check.
+    The handler therefore follows the whole chain itself (redirects off, one fetch per hop), vets every
+    Location, and aborts if any hop leaves the origin. If the chain ends on a same-origin page, the browser
+    gets one redirect straight to that validated URL, so page.url and relative links stay correct.
+    Sub-resources (images, scripts, fonts) are left alone: the point is that a plan can never end up driving
+    a different site, not that a page may not load a CDN asset.
     """
     def guard(route: Route) -> None:
         req = route.request
@@ -77,13 +83,25 @@ def _confine_navigation(context: BrowserContext, base_url: str) -> None:
             route.abort("blockedbyclient")
             return
         try:
+            cur = req.url
             resp = route.fetch(max_redirects=0)
-            if 300 <= resp.status < 400:
+            for _ in range(MAX_REDIRECTS):
+                if not 300 <= resp.status < 400:
+                    break
                 loc = resp.headers.get("location")
-                if not loc or not same_origin(urljoin(req.url, loc), base_url):
+                nxt = urljoin(cur, loc) if loc else ""
+                if not nxt or not same_origin(nxt, base_url):
                     route.abort("blockedbyclient")
                     return
-            route.fulfill(response=resp)
+                cur = nxt
+                resp = route.fetch(url=cur, method="GET", post_data=b"", max_redirects=0)
+            else:
+                route.abort("failed")  # redirect loop or an absurdly long chain
+                return
+            if cur == req.url:
+                route.fulfill(response=resp)
+            else:
+                route.fulfill(status=302, headers={"location": cur})
         except Exception:  # noqa: BLE001 - fail closed: a navigation we could not vet does not happen
             route.abort("failed")
 
@@ -108,7 +126,8 @@ def run_plan(
         browser = pw.chromium.launch(headless=not headed)
         for ji, journey in enumerate(plan.journeys):
             jslug = f"{ji}-{_slug(journey.name)}"
-            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            # Service workers can answer navigations without the request ever reaching the route guard.
+            context = browser.new_context(viewport={"width": 1280, "height": 800}, service_workers="block")
             _confine_navigation(context, base)
             context.tracing.start(screenshots=True, snapshots=True)
             page = context.new_page()

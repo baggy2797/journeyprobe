@@ -140,3 +140,55 @@ def test_redirect_and_link_to_another_origin_are_blocked_at_the_network_layer(tm
         shop.shutdown()
         other.shutdown()
     assert hits == [], "the other origin must never receive a request"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("hops", [
+    ["{other}/x"],                                   # plain absolute
+    ["//127.0.0.1:{port}/x"],                        # scheme-relative
+    ["/\\\\127.0.0.1:{port}/x"],                      # backslash: browsers read it as a slash
+    ["\\\\127.0.0.1:{port}/x"],
+    ["/hop1", "/hop2", "{other}/x"],                 # a chain: every hop must be vetted, not just the first
+])
+def test_tricky_and_multi_hop_redirects_never_reach_another_origin(tmp_path: Path, hops: list[str]) -> None:
+    hits: list[str] = []
+
+    class Other(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a: object) -> None: ...
+
+    other, other_url = _server(Other)
+    port = other.server_address[1]
+    chain = [h.format(other=other_url, port=port) for h in hops]
+
+    class Shop(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            order = ["/start", *[c for c in chain if c.startswith("/hop")]]
+            idx = order.index(self.path) if self.path in order else -1
+            if idx >= 0:
+                nxt = chain[idx] if idx < len(chain) else chain[-1]
+                self.send_response(302)
+                self.send_header("Location", nxt)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a: object) -> None: ...
+
+    shop, shop_url = _server(Shop)
+    site = SiteProfile.model_validate({"name": "t", "base_url": shop_url, "selectors": {}})
+    plan = Plan.model_validate({
+        "persona": "p", "site": "t", "generated_by": {"provider": "t", "model": "t"},
+        "journeys": [{"name": "j", "goal": "g", "steps": [{"action": "goto", "path": "/start"}]}]})
+    try:
+        res = run_plan(plan, site, tmp_path, timeout_ms=1500)
+    finally:
+        shop.shutdown()
+        other.shutdown()
+    assert not res.passed
+    assert hits == [], f"the other origin received {hits}"
