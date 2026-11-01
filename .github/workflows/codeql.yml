@@ -9,6 +9,8 @@ permissions:
   contents: read
 jobs:
   analyze:
+    # Code scanning is only available on public repos (or with GitHub Advanced Security), so skip while private.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
