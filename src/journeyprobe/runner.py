@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import BrowserContext, Route, sync_playwright
 from pydantic import BaseModel
@@ -63,14 +65,28 @@ def _trim_dom(html: str) -> str:
 MAX_REDIRECTS = 10
 
 # The navigation guard fulfils documents itself, and Chromium then classes them as "public", so its
-# Private Network Access checks block the page's own scripts on a private or loopback address (a Docker
-# service, a staging box, any non-localhost host). A test runner exists to drive such sites, so those checks
-# are off for this browser only. Unknown feature names are ignored, so this survives Chromium upgrades.
-_CHROMIUM_ARGS = [
+# Private Network Access checks block the page's own scripts when the site under test lives on a private or
+# loopback address (a Docker service, a staging box, localhost). Those checks are therefore turned off, but
+# ONLY when the target itself is on such an address (see _is_private_target). For a public target they stay
+# on, so a page on someone else's site cannot probe your localhost or internal network through the browser.
+# Unknown feature names are ignored, so this survives Chromium upgrades.
+_PNA_OFF = [
     "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights,"
     "PrivateNetworkAccessRespectPreflightResults,PrivateNetworkAccessForNavigations,"
     "PrivateNetworkAccessForWorkers,LocalNetworkAccessChecks,LocalNetworkAccessChecksWebSockets",
 ]
+
+
+def _is_private_target(base_url: str) -> bool:
+    """True when every address the host resolves to is private, loopback or link-local. Fails safe (False)."""
+    host = urlparse(base_url).hostname
+    if not host:
+        return False
+    try:
+        addrs = {ipaddress.ip_address(str(i[4][0]).split("%")[0]) for i in socket.getaddrinfo(host, None)}
+    except (OSError, ValueError):
+        return False
+    return bool(addrs) and all(a.is_private or a.is_loopback or a.is_link_local for a in addrs)
 
 
 def _confine_navigation(context: BrowserContext, base_url: str) -> None:
@@ -133,7 +149,7 @@ def run_plan(
     out_dir.mkdir(parents=True, exist_ok=True)
     journeys: list[JourneyResult] = []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not headed, args=_CHROMIUM_ARGS)
+        browser = pw.chromium.launch(headless=not headed, args=_PNA_OFF if _is_private_target(base) else [])
         for ji, journey in enumerate(plan.journeys):
             jslug = f"{ji}-{_slug(journey.name)}"
             # Service workers can answer navigations without the request ever reaching the route guard.

@@ -261,30 +261,59 @@ def test_shop_server_is_not_blocked_by_an_idle_connection() -> None:
         httpd.server_close()
 
 
+def _private_lan_ip() -> str | None:
+    """This machine's private, non-loopback IPv4 address (no traffic is sent), or None."""
+    import ipaddress
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.connect(("10.255.255.255", 1))
+            ip = str(sock.getsockname()[0])
+        except OSError:
+            return None
+    return ip if ipaddress.ip_address(ip).is_private and not ipaddress.ip_address(ip).is_loopback else None
+
+
 @pytest.mark.integration
-def test_example_plan_runs_against_a_non_localhost_hostname(tmp_path: Path) -> None:
-    """Regression: in Docker (host 'shop') every page script was blocked by Private Network Access.
+def test_example_plan_runs_against_a_private_non_loopback_address(tmp_path: Path) -> None:
+    """Regression: in Docker (host 'shop' on a private IP) every page script was blocked by Private Network Access.
 
     The tests used 127.0.0.1, which Chromium treats as secure, so this only showed up in the container.
     """
-    import socket
-
     from journeyprobe.models import load_plan, load_site
     from journeyprobe.shop import make_server
 
-    host = socket.gethostname()
-    try:
-        socket.getaddrinfo(host, None)
-    except OSError:
-        pytest.skip("this machine's hostname does not resolve")
-    httpd = make_server("0.0.0.0", 0)  # noqa: S104 - reachable by hostname on purpose
+    ip = _private_lan_ip()
+    if ip is None:
+        pytest.skip("no private LAN address on this machine")
+    httpd = make_server("0.0.0.0", 0)  # noqa: S104 - reachable on the LAN address on purpose
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     examples = Path(__file__).resolve().parents[1] / "examples"
     try:
         res = run_plan(load_plan(examples / "plans/maya-fixture-shop.plan.yaml"),
                        load_site(examples / "sites/fixture-shop.yaml"), tmp_path,
-                       base_url=f"http://{host}:{httpd.server_address[1]}")
+                       base_url=f"http://{ip}:{httpd.server_address[1]}")
     finally:
         httpd.shutdown()
         httpd.server_close()
     assert res.passed, res.model_dump_json(indent=1)
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("http://127.0.0.1:8431", True),
+    ("http://localhost:8431", True),
+    ("http://10.1.2.3/", True),
+    ("http://192.168.1.5/", True),
+    ("http://172.18.0.2:8431", True),
+    ("http://169.254.1.1/", True),
+    ("http://8.8.8.8/", False),                 # public
+    ("https://93.184.216.34/", False),          # public
+    ("http://no-such-host.invalid/", False),    # does not resolve: fail safe, keep the checks on
+    ("not a url", False),
+    ("", False),
+])
+def test_private_network_checks_are_only_disabled_for_private_targets(url: str, expected: bool) -> None:
+    from journeyprobe.runner import _is_private_target
+
+    assert _is_private_target(url) is expected
