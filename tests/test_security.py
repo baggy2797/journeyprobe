@@ -355,17 +355,19 @@ def test_browser_args_relax_and_pin_only_for_private_targets() -> None:
 def test_rebinding_after_the_check_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     """DNS rebinding between the private-target check and a later document fetch must not go unnoticed."""
     import socket
+    from collections.abc import Callable
+    from typing import Any
 
     from journeyprobe import runner
 
-    def answer(ip: str):  # noqa: ANN202
+    def answer(ip: str) -> Callable[..., list[Any]]:
         return lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
 
-    monkeypatch.setattr(runner.socket, "getaddrinfo", answer("10.0.0.5"))
+    monkeypatch.setattr(socket, "getaddrinfo", answer("10.0.0.5"))
     pinned = runner._private_target("http://shop:8431")
     assert pinned == "10.0.0.5"
     assert runner._private_target("http://shop:8431") == pinned           # unchanged: allowed
-    monkeypatch.setattr(runner.socket, "getaddrinfo", answer("93.184.216.34"))
+    monkeypatch.setattr(socket, "getaddrinfo", answer("93.184.216.34"))
     assert runner._private_target("http://shop:8431") != pinned           # now public: the guard aborts
-    monkeypatch.setattr(runner.socket, "getaddrinfo", answer("10.0.0.99"))
+    monkeypatch.setattr(socket, "getaddrinfo", answer("10.0.0.99"))
     assert runner._private_target("http://shop:8431") != pinned           # another private IP: also refused
