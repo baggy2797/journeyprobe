@@ -49,6 +49,10 @@ def test_failure_produces_artifacts_and_junit(shop_url: str, workdir: Path, tmp_
     assert (tmp_path / res.journeys[0].trace).exists()
     paths = write_reports(res, tmp_path)
     assert ET.parse(paths["junit"]).getroot().attrib["failures"] == "2"  # noqa: S314
+    # A locator that never appears is a Playwright timeout, and the JUnit says so (not a generic "StepFailed").
+    assert bad.error_type == "TimeoutError"
+    types = {f.attrib["type"] for f in ET.parse(paths["junit"]).getroot().iter("failure")}  # noqa: S314
+    assert types == {"TimeoutError"}
 
 
 def test_step_failure_in_plan_target_and_assertions(shop_url: str, site: SiteProfile, tmp_path: Path) -> None:

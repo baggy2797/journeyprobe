@@ -77,6 +77,11 @@ patch -p1 < heal.patch        # only after you have read it
 journey, stable names), `report.html`, `results.json`, and for failed journeys a full-page screenshot, a trimmed DOM
 snapshot and a Playwright `trace.zip` (`playwright show-trace`).
 
+A failed journey's `<failure type=...>` is the real error class of the failing step: `TimeoutError` (Playwright waited too
+long), `AssertionError` (an `assert_*` step), `StepError` (journeyprobe refused, e.g. to leave the site origin) or
+`PlaywrightError`. The `message` is unchanged (`step N (action): ...`). Flaky-test tools can key on the type; the same
+value is `error_type` in `results.json`. Results written by older versions have no `error_type` and keep `StepFailed`.
+
 ### GitHub Action
 
 ```yaml

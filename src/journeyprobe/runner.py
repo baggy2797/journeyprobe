@@ -11,6 +11,7 @@ from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import BrowserContext, Route, sync_playwright
+from playwright.sync_api import Error as PlaywrightError
 from pydantic import BaseModel
 
 from .actions import REGISTRY, Ctx, StepError
@@ -26,6 +27,7 @@ class StepResult(BaseModel):
     status: Literal["passed", "failed", "skipped"]
     duration_s: float = 0.0
     error: str | None = None
+    error_type: str | None = None  # error class, e.g. TimeoutError; lets downstream tools classify failures
     locator_path: str | None = None  # e.g. "journeys[0].steps[2].target" or "selectors.search_input"
     locator: Target | None = None
     screenshot: str | None = None
@@ -124,6 +126,18 @@ def _browser_args(base_url: str, ip: str | None = None) -> list[str]:
     except ValueError:
         args.append(f"--host-resolver-rules=MAP {host} {'[' + ip + ']' if ':' in ip else ip}")
     return args
+
+
+def error_type_of(exc: BaseException) -> str:
+    """Stable name for a step failure's class, used as the JUnit <failure type>.
+
+    Playwright's timeout class is already called TimeoutError (a subclass of its Error, which would otherwise
+    be reported as the unhelpful 'Error'); assertions are AssertionError; journeyprobe's own refusals are
+    StepError. Anything else keeps its class name.
+    """
+    if isinstance(exc, PlaywrightError):
+        return "TimeoutError" if type(exc).__name__ == "TimeoutError" else "PlaywrightError"
+    return type(exc).__name__
 
 
 def _confine_navigation(context: BrowserContext, base_url: str, pinned_ip: str | None = None) -> None:
@@ -241,6 +255,7 @@ def run_plan(
                         index=si, action=step.action, note=step.note, status="failed",
                         duration_s=round(time.perf_counter() - t0, 3),
                         error=str(e).strip().splitlines()[0][:500] if str(e).strip() else repr(e),
+                        error_type=error_type_of(e),
                         locator_path=path, locator=ctx.locator,
                         screenshot=shot.name if shot.exists() else None,
                         dom=dom_file.name if dom_file.exists() else None,
