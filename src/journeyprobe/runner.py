@@ -147,7 +147,10 @@ def _confine_navigation(context: BrowserContext, base_url: str, pinned_ip: str |
             return
         # The document fetch below uses Playwright's own HTTP client, which --host-resolver-rules does not
         # reach, so confirm the host still resolves to the address that justified relaxing the browser.
-        if pinned_ip is not None and _private_target(req.url) != pinned_ip:
+        def moved(url: str) -> bool:
+            return pinned_ip is not None and _private_target(url) != pinned_ip
+
+        if moved(req.url):
             route.abort("blockedbyclient")
             return
         try:
@@ -162,6 +165,9 @@ def _confine_navigation(context: BrowserContext, base_url: str, pinned_ip: str |
                     route.abort("blockedbyclient")
                     return
                 cur = nxt
+                if moved(cur):  # every hop is a fresh fetch with its own DNS lookup
+                    route.abort("blockedbyclient")
+                    return
                 resp = route.fetch(url=cur, method="GET", post_data=b"", max_redirects=0)
             else:
                 route.abort("failed")  # redirect loop or an absurdly long chain
