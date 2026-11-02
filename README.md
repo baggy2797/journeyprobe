@@ -146,7 +146,9 @@ broken-selector scenario, artifact checks, heal end-to-end and applying the gene
   private, loopback or link-local addresses (Docker, staging, localhost), Chromium's Private Network Access checks are
   turned off for that run, because the redirect guard serves pages itself and they would otherwise be treated as public
   and lose their own scripts. A page on such a target can therefore reach other private services. For a public target, or
-  a host that does not resolve or has any public address, the checks stay on.
+  a host that does not resolve or has any public address, the checks stay on. The browser is pinned to the checked
+  address and the host is re-resolved before every document fetch (aborting on any change); a very small race window
+  between that check and the fetch remains, which needs hostile DNS for a host you chose to test.
 - **Vocabulary is e-commerce flavoured** and deliberately small. Assertions are text/visibility/URL only.
 - **Heal handles locator failures only**; it does not fix wrong expectations, changed flows or timing issues, and it
   heals one failure per journey (steps after the first failure are skipped).

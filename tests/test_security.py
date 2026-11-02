@@ -350,3 +350,22 @@ def test_browser_args_relax_and_pin_only_for_private_targets() -> None:
     named = _browser_args("http://localhost:8431")                       # private name: pinned to what we checked
     assert named[:len(_PNA_OFF)] == _PNA_OFF
     assert any(a.startswith("--host-resolver-rules=MAP localhost ") for a in named)
+
+
+def test_rebinding_after_the_check_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DNS rebinding between the private-target check and a later document fetch must not go unnoticed."""
+    import socket
+
+    from journeyprobe import runner
+
+    def answer(ip: str):  # noqa: ANN202
+        return lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr(runner.socket, "getaddrinfo", answer("10.0.0.5"))
+    pinned = runner._private_target("http://shop:8431")
+    assert pinned == "10.0.0.5"
+    assert runner._private_target("http://shop:8431") == pinned           # unchanged: allowed
+    monkeypatch.setattr(runner.socket, "getaddrinfo", answer("93.184.216.34"))
+    assert runner._private_target("http://shop:8431") != pinned           # now public: the guard aborts
+    monkeypatch.setattr(runner.socket, "getaddrinfo", answer("10.0.0.99"))
+    assert runner._private_target("http://shop:8431") != pinned           # another private IP: also refused

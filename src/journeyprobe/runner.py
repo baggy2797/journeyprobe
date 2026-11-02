@@ -111,10 +111,10 @@ def _private_target(base_url: str) -> str | None:
     return str(addrs[0])
 
 
-def _browser_args(base_url: str) -> list[str]:
+def _browser_args(base_url: str, ip: str | None = None) -> list[str]:
     """Chromium flags for this target: Private Network Access relaxed only for a private target, and the
     browser pinned to the exact address that was checked, so DNS cannot change between check and use."""
-    ip = _private_target(base_url)
+    ip = ip or _private_target(base_url)
     if ip is None:
         return []
     args = list(_PNA_OFF)
@@ -126,7 +126,7 @@ def _browser_args(base_url: str) -> list[str]:
     return args
 
 
-def _confine_navigation(context: BrowserContext, base_url: str) -> None:
+def _confine_navigation(context: BrowserContext, base_url: str, pinned_ip: str | None = None) -> None:
     """Abort every off-origin page navigation: direct ones, link clicks and every redirect hop.
 
     A redirect that the handler hands back to the browser is followed inside the browser's network stack
@@ -143,6 +143,11 @@ def _confine_navigation(context: BrowserContext, base_url: str) -> None:
             route.continue_()
             return
         if not same_origin(req.url, base_url):
+            route.abort("blockedbyclient")
+            return
+        # The document fetch below uses Playwright's own HTTP client, which --host-resolver-rules does not
+        # reach, so confirm the host still resolves to the address that justified relaxing the browser.
+        if pinned_ip is not None and _private_target(req.url) != pinned_ip:
             route.abort("blockedbyclient")
             return
         try:
@@ -185,13 +190,14 @@ def run_plan(
         site = site.model_copy(update={"base_url": base_url})
     out_dir.mkdir(parents=True, exist_ok=True)
     journeys: list[JourneyResult] = []
+    pin = _private_target(base)  # resolved once: the same answer drives the flags and the per-fetch check
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not headed, args=_browser_args(base))
+        browser = pw.chromium.launch(headless=not headed, args=_browser_args(base, pin))
         for ji, journey in enumerate(plan.journeys):
             jslug = f"{ji}-{_slug(journey.name)}"
             # Service workers can answer navigations without the request ever reaching the route guard.
             context = browser.new_context(viewport={"width": 1280, "height": 800}, service_workers="block")
-            _confine_navigation(context, base)
+            _confine_navigation(context, base, pin)
             context.tracing.start(screenshots=True, snapshots=True)
             page = context.new_page()
             ctx = Ctx(page=page, site=site, base_url=base, timeout_ms=timeout_ms)
