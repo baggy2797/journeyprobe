@@ -314,6 +314,39 @@ def test_example_plan_runs_against_a_private_non_loopback_address(tmp_path: Path
     ("", False),
 ])
 def test_private_network_checks_are_only_disabled_for_private_targets(url: str, expected: bool) -> None:
-    from journeyprobe.runner import _is_private_target
+    from journeyprobe.runner import _private_target
 
-    assert _is_private_target(url) is expected
+    assert (_private_target(url) is not None) is expected
+
+
+@pytest.mark.parametrize("addr,expected", [
+    ("10.1.2.3", True), ("172.16.0.1", True), ("172.32.0.1", False), ("192.168.1.1", True),
+    ("127.0.0.1", True), ("169.254.9.9", True), ("::1", True), ("fe80::1", True), ("fd12::1", True),
+    ("8.8.8.8", False),
+    ("0.0.0.0", False),            # unspecified: is_private says True, but it is not a private network
+    ("192.0.2.1", False),          # TEST-NET-1: ditto
+    ("100.64.0.1", False),         # carrier-grade NAT
+    ("::ffff:8.8.8.8", False),     # public IPv4 in an IPv6 costume
+    ("::ffff:10.0.0.1", True),     # private IPv4 in an IPv6 costume
+    ("2002:0808:0808::1", False),  # 6to4 wrapping 8.8.8.8
+    ("2001:0:4136:e378:8000:63bf:3fff:fdd2", False),  # Teredo
+    ("64:ff9b::808:808", False),   # NAT64 wrapping 8.8.8.8
+    ("2402:e280:210a::1", False),  # global IPv6
+])
+def test_private_ip_allowlist(addr: str, expected: bool) -> None:
+    import ipaddress
+
+    from journeyprobe.runner import _is_private_ip
+
+    assert _is_private_ip(ipaddress.ip_address(addr)) is expected
+
+
+def test_browser_args_relax_and_pin_only_for_private_targets() -> None:
+    from journeyprobe.runner import _PNA_OFF, _browser_args
+
+    assert _browser_args("http://8.8.8.8/") == []                       # public: checks stay on
+    assert _browser_args("http://no-such-host.invalid/") == []          # unresolvable: fail safe
+    assert _browser_args("http://10.1.2.3:8431") == _PNA_OFF            # private literal: nothing to pin
+    named = _browser_args("http://localhost:8431")                       # private name: pinned to what we checked
+    assert named[:len(_PNA_OFF)] == _PNA_OFF
+    assert any(a.startswith("--host-resolver-rules=MAP localhost ") for a in named)

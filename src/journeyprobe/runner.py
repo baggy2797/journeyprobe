@@ -77,16 +77,53 @@ _PNA_OFF = [
 ]
 
 
-def _is_private_target(base_url: str) -> bool:
-    """True when every address the host resolves to is private, loopback or link-local. Fails safe (False)."""
+# An explicit allowlist, not ipaddress.is_private: that property's answers differ between Python versions
+# and it also covers reserved ranges (TEST-NETs, 0.0.0.0/8 ...) that are not private networks.
+_PRIVATE_NETS = [ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16",
+    "::1/128", "fe80::/10", "fc00::/7",
+)]
+
+
+def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:  # ::ffff:8.8.8.8 is the PUBLIC address 8.8.8.8
+            addr = addr.ipv4_mapped
+        elif addr.sixtofour is not None or addr.teredo is not None:
+            return False  # tunnelled: the embedded address says nothing about where the host is
+    return any(addr in net for net in _PRIVATE_NETS)
+
+
+def _private_target(base_url: str) -> str | None:
+    """The address to pin when every address the host resolves to is private, else None. Fails safe."""
     host = urlparse(base_url).hostname
     if not host:
-        return False
+        return None
     try:
-        addrs = {ipaddress.ip_address(str(i[4][0]).split("%")[0]) for i in socket.getaddrinfo(host, None)}
+        addrs = sorted(
+            {ipaddress.ip_address(str(i[4][0]).split("%")[0]) for i in socket.getaddrinfo(host, None)},
+            key=lambda a: (a.version, str(a)),
+        )
     except (OSError, ValueError):
-        return False
-    return bool(addrs) and all(a.is_private or a.is_loopback or a.is_link_local for a in addrs)
+        return None
+    if not addrs or not all(_is_private_ip(a) for a in addrs):
+        return None
+    return str(addrs[0])
+
+
+def _browser_args(base_url: str) -> list[str]:
+    """Chromium flags for this target: Private Network Access relaxed only for a private target, and the
+    browser pinned to the exact address that was checked, so DNS cannot change between check and use."""
+    ip = _private_target(base_url)
+    if ip is None:
+        return []
+    args = list(_PNA_OFF)
+    host = urlparse(base_url).hostname or ""
+    try:
+        ipaddress.ip_address(host)  # already a literal address: nothing to pin
+    except ValueError:
+        args.append(f"--host-resolver-rules=MAP {host} {'[' + ip + ']' if ':' in ip else ip}")
+    return args
 
 
 def _confine_navigation(context: BrowserContext, base_url: str) -> None:
@@ -149,7 +186,7 @@ def run_plan(
     out_dir.mkdir(parents=True, exist_ok=True)
     journeys: list[JourneyResult] = []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not headed, args=_PNA_OFF if _is_private_target(base) else [])
+        browser = pw.chromium.launch(headless=not headed, args=_browser_args(base))
         for ji, journey in enumerate(plan.journeys):
             jslug = f"{ji}-{_slug(journey.name)}"
             # Service workers can answer navigations without the request ever reaching the route guard.
