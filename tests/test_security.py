@@ -239,3 +239,23 @@ def test_run_fails_if_the_browser_ends_up_off_origin_even_when_a_server_changes_
         shop.shutdown()
         other.shutdown()
     assert not res.passed
+
+
+def test_shop_server_is_not_blocked_by_an_idle_connection() -> None:
+    """Regression: demo-shop was single-threaded, so Chromium's idle speculative connection stalled it."""
+    import socket
+    import urllib.request
+
+    from journeyprobe.shop import make_server
+
+    httpd = make_server("127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+    idle = socket.create_connection(("127.0.0.1", port))  # connects, sends nothing, like a preconnect
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as r:  # noqa: S310
+            assert r.status == 200
+    finally:
+        idle.close()
+        httpd.shutdown()
+        httpd.server_close()

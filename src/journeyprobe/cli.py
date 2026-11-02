@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import functools
 import http.server
-import socketserver
 from pathlib import Path
 from typing import Annotated
 
@@ -136,11 +134,10 @@ def heal(
 @app.command("demo-shop")
 def demo_shop(port: int = 8431, host: str = "127.0.0.1") -> None:
     """Serve the bundled fixture shop (used by the examples and docker-compose)."""
-    from .shop import shop_dir
+    from .shop import make_server
 
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(shop_dir()))
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer((host, port), handler) as httpd:
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    with make_server(host, port) as httpd:
         typer.echo(f"fixture shop on http://{host}:{port}/")
         httpd.serve_forever()
 
