@@ -259,3 +259,32 @@ def test_shop_server_is_not_blocked_by_an_idle_connection() -> None:
         idle.close()
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.mark.integration
+def test_example_plan_runs_against_a_non_localhost_hostname(tmp_path: Path) -> None:
+    """Regression: in Docker (host 'shop') every page script was blocked by Private Network Access.
+
+    The tests used 127.0.0.1, which Chromium treats as secure, so this only showed up in the container.
+    """
+    import socket
+
+    from journeyprobe.models import load_plan, load_site
+    from journeyprobe.shop import make_server
+
+    host = socket.gethostname()
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        pytest.skip("this machine's hostname does not resolve")
+    httpd = make_server("0.0.0.0", 0)  # noqa: S104 - reachable by hostname on purpose
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    try:
+        res = run_plan(load_plan(examples / "plans/maya-fixture-shop.plan.yaml"),
+                       load_site(examples / "sites/fixture-shop.yaml"), tmp_path,
+                       base_url=f"http://{host}:{httpd.server_address[1]}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert res.passed, res.model_dump_json(indent=1)

@@ -62,6 +62,16 @@ def _trim_dom(html: str) -> str:
 
 MAX_REDIRECTS = 10
 
+# The navigation guard fulfils documents itself, and Chromium then classes them as "public", so its
+# Private Network Access checks block the page's own scripts on a private or loopback address (a Docker
+# service, a staging box, any non-localhost host). A test runner exists to drive such sites, so those checks
+# are off for this browser only. Unknown feature names are ignored, so this survives Chromium upgrades.
+_CHROMIUM_ARGS = [
+    "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights,"
+    "PrivateNetworkAccessRespectPreflightResults,PrivateNetworkAccessForNavigations,"
+    "PrivateNetworkAccessForWorkers,LocalNetworkAccessChecks,LocalNetworkAccessChecksWebSockets",
+]
+
 
 def _confine_navigation(context: BrowserContext, base_url: str) -> None:
     """Abort every off-origin page navigation: direct ones, link clicks and every redirect hop.
@@ -123,7 +133,7 @@ def run_plan(
     out_dir.mkdir(parents=True, exist_ok=True)
     journeys: list[JourneyResult] = []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not headed)
+        browser = pw.chromium.launch(headless=not headed, args=_CHROMIUM_ARGS)
         for ji, journey in enumerate(plan.journeys):
             jslug = f"{ji}-{_slug(journey.name)}"
             # Service workers can answer navigations without the request ever reaching the route guard.
