@@ -1,0 +1,21 @@
+name: fixture-shop
+base_url: http://127.0.0.1:8431
+description: Tiny static shop bundled with journeyprobe (run `journeyprobe demo-shop`).
+pages:
+  /: Home page with search box
+  /search.html: Search results, filtered by ?q=
+  /product.html: Product detail with Add to cart
+  /cart.html: Cart contents and total
+known_items:
+  - Ceramic Mug
+  - Travel Mug
+  - Notebook
+  - Desk Lamp
+  - Canvas Tote
+selectors:
+  search_input:
+    testid: search-input
+  search_submit:
+    testid: search-submit
+  add_to_cart:
+    testid: add-to-cart
