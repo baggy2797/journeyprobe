@@ -261,30 +261,113 @@ def test_shop_server_is_not_blocked_by_an_idle_connection() -> None:
         httpd.server_close()
 
 
+def _private_lan_ip() -> str | None:
+    """This machine's private, non-loopback IPv4 address (no traffic is sent), or None."""
+    import ipaddress
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.connect(("10.255.255.255", 1))
+            ip = str(sock.getsockname()[0])
+        except OSError:
+            return None
+    return ip if ipaddress.ip_address(ip).is_private and not ipaddress.ip_address(ip).is_loopback else None
+
+
 @pytest.mark.integration
-def test_example_plan_runs_against_a_non_localhost_hostname(tmp_path: Path) -> None:
-    """Regression: in Docker (host 'shop') every page script was blocked by Private Network Access.
+def test_example_plan_runs_against_a_private_non_loopback_address(tmp_path: Path) -> None:
+    """Regression: in Docker (host 'shop' on a private IP) every page script was blocked by Private Network Access.
 
     The tests used 127.0.0.1, which Chromium treats as secure, so this only showed up in the container.
     """
-    import socket
-
     from journeyprobe.models import load_plan, load_site
     from journeyprobe.shop import make_server
 
-    host = socket.gethostname()
-    try:
-        socket.getaddrinfo(host, None)
-    except OSError:
-        pytest.skip("this machine's hostname does not resolve")
-    httpd = make_server("0.0.0.0", 0)  # noqa: S104 - reachable by hostname on purpose
+    ip = _private_lan_ip()
+    if ip is None:
+        pytest.skip("no private LAN address on this machine")
+    httpd = make_server("0.0.0.0", 0)  # noqa: S104 - reachable on the LAN address on purpose
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     examples = Path(__file__).resolve().parents[1] / "examples"
     try:
         res = run_plan(load_plan(examples / "plans/maya-fixture-shop.plan.yaml"),
                        load_site(examples / "sites/fixture-shop.yaml"), tmp_path,
-                       base_url=f"http://{host}:{httpd.server_address[1]}")
+                       base_url=f"http://{ip}:{httpd.server_address[1]}")
     finally:
         httpd.shutdown()
         httpd.server_close()
     assert res.passed, res.model_dump_json(indent=1)
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("http://127.0.0.1:8431", True),
+    ("http://localhost:8431", True),
+    ("http://10.1.2.3/", True),
+    ("http://192.168.1.5/", True),
+    ("http://172.18.0.2:8431", True),
+    ("http://169.254.1.1/", True),
+    ("http://8.8.8.8/", False),                 # public
+    ("https://93.184.216.34/", False),          # public
+    ("http://no-such-host.invalid/", False),    # does not resolve: fail safe, keep the checks on
+    ("not a url", False),
+    ("", False),
+])
+def test_private_network_checks_are_only_disabled_for_private_targets(url: str, expected: bool) -> None:
+    from journeyprobe.runner import _private_target
+
+    assert (_private_target(url) is not None) is expected
+
+
+@pytest.mark.parametrize("addr,expected", [
+    ("10.1.2.3", True), ("172.16.0.1", True), ("172.32.0.1", False), ("192.168.1.1", True),
+    ("127.0.0.1", True), ("169.254.9.9", True), ("::1", True), ("fe80::1", True), ("fd12::1", True),
+    ("8.8.8.8", False),
+    ("0.0.0.0", False),            # unspecified: is_private says True, but it is not a private network
+    ("192.0.2.1", False),          # TEST-NET-1: ditto
+    ("100.64.0.1", False),         # carrier-grade NAT
+    ("::ffff:8.8.8.8", False),     # public IPv4 in an IPv6 costume
+    ("::ffff:10.0.0.1", True),     # private IPv4 in an IPv6 costume
+    ("2002:0808:0808::1", False),  # 6to4 wrapping 8.8.8.8
+    ("2001:0:4136:e378:8000:63bf:3fff:fdd2", False),  # Teredo
+    ("64:ff9b::808:808", False),   # NAT64 wrapping 8.8.8.8
+    ("2402:e280:210a::1", False),  # global IPv6
+])
+def test_private_ip_allowlist(addr: str, expected: bool) -> None:
+    import ipaddress
+
+    from journeyprobe.runner import _is_private_ip
+
+    assert _is_private_ip(ipaddress.ip_address(addr)) is expected
+
+
+def test_browser_args_relax_and_pin_only_for_private_targets() -> None:
+    from journeyprobe.runner import _PNA_OFF, _browser_args
+
+    assert _browser_args("http://8.8.8.8/") == []                       # public: checks stay on
+    assert _browser_args("http://no-such-host.invalid/") == []          # unresolvable: fail safe
+    assert _browser_args("http://10.1.2.3:8431") == _PNA_OFF            # private literal: nothing to pin
+    named = _browser_args("http://localhost:8431")                       # private name: pinned to what we checked
+    assert named[:len(_PNA_OFF)] == _PNA_OFF
+    assert any(a.startswith("--host-resolver-rules=MAP localhost ") for a in named)
+
+
+def test_rebinding_after_the_check_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DNS rebinding between the private-target check and a later document fetch must not go unnoticed."""
+    import socket
+    from collections.abc import Callable
+    from typing import Any
+
+    from journeyprobe import runner
+
+    def answer(ip: str) -> Callable[..., list[Any]]:
+        return lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", answer("10.0.0.5"))
+    pinned = runner._private_target("http://shop:8431")
+    assert pinned == "10.0.0.5"
+    assert runner._private_target("http://shop:8431") == pinned           # unchanged: allowed
+    monkeypatch.setattr(socket, "getaddrinfo", answer("93.184.216.34"))
+    assert runner._private_target("http://shop:8431") != pinned           # now public: the guard aborts
+    monkeypatch.setattr(socket, "getaddrinfo", answer("10.0.0.99"))
+    assert runner._private_target("http://shop:8431") != pinned           # another private IP: also refused
