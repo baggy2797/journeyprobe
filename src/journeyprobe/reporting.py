@@ -26,7 +26,7 @@ def junit_xml(result: RunResult) -> str:
         if j.status == "failed":
             bad = next(s for s in j.steps if s.status == "failed")
             fl = ET.SubElement(tc, "failure", {
-                "type": "StepFailed",
+                "type": bad.error_type or "StepFailed",  # StepFailed only for results written before error_type existed
                 "message": f"step {bad.index} ({bad.action}): {bad.error}",
             })
             if bad.screenshot:
@@ -43,7 +43,8 @@ def html_report(result: RunResult) -> str:
     for j in result.journeys:
         steps = []
         for s in j.steps:
-            err = f'<div class="err">{e(s.error or "")}</div>' if s.error else ""
+            kind = f"{s.error_type}: " if s.error_type else ""
+            err = f'<div class="err">{e(kind)}{e(s.error or "")}</div>' if s.error else ""
             shot = f'<a href="{e(s.screenshot)}"><img src="{e(s.screenshot)}" alt="failure"></a>' \
                 if s.screenshot else ""
             steps.append(f'<li class="{s.status}"><b>{e(s.action)}</b> {e(s.note or "")} '
